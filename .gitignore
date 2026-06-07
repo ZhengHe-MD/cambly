@@ -1,0 +1,22 @@
+# Reverse-engineering capture artifacts (may contain auth tokens/cookies)
+recon/capture.jsonl
+recon/capture*.jsonl
+recon/*.har
+recon/creds*
+
+# Session/credential storage written by the CLI at runtime
+*.session
+credentials.json
+.cambly/
+config.local.*
+.env
+.env.*
+
+# Go
+/cambly
+/bin/
+*.test
+*.out
+
+# OS
+.DS_Store

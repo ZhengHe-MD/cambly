@@ -31,6 +31,7 @@ COMMANDS
   search       Search the tutor catalog            (e.g. cambly search "ielts")
   schedule     List a tutor's schedule / open slots (cambly schedule <tutorId>)
   bookings     List your upcoming booked classes
+  records      Download class recordings             (default: latest recording)
   book         Book a class                         (--tutor <id> --start <when>)
   cancel       Cancel a booked class                (--lesson <id>)
   version      Print version
@@ -71,6 +72,8 @@ func main() {
 		err = cmdSchedule(args)
 	case "bookings", "lessons":
 		err = cmdBookings(args)
+	case "records", "recordings":
+		err = cmdRecords(args)
 	case "book":
 		err = cmdBook(args)
 	case "cancel":

@@ -44,8 +44,14 @@ captures that cookie directly instead of replaying this call.)
 | Tutor schedule | `GET /getTutorSchedule?tutor=<id>&userId=<uid>&language=en&interfaceLanguage=en` |
 | Tutor search | `POST /api/v2/algolia/search` (+ `GET /api/v2/algolia/index_config?queryType=tutor` for the index) |
 | Upcoming lessons | `GET /api/lessons_v2?studentId=<uid>&minScheduledStartAt=<ms>&maxScheduledStartAt=<ms>&includeCancelled=false&viewAs=student` |
+| Lesson detail | `GET /api/lessons_v2/<lessonId>?viewAs=student` |
 | Lesson participants | `GET /api/lesson_participants?lessonId[]=<id>&includeCancelled=false&viewAs=student` |
+| Lesson recording session | `GET /api/lessons_v2/<lessonId>/video_session_id` → `<videoSessionId>` |
+| Recording metadata | `GET /api/video_sessions/<videoSessionId>?viewAs=student` → `{hasVideoUrl, provider, lessonId, …}` |
+| Recording video | `GET /api/video_sessions/<videoSessionId>/video` → redirects/streams `video/mp4` |
+| Lesson transcript | `GET /model/lesson_transcript/<lessonId>?language=en&interfaceLanguage=en` |
 | Booking history (legacy) | `GET /api/reservations?studentId=<uid>&cancelled=false&end=<ms>&sort=-1&limit=50&viewAs=student` |
+| Class recordings (legacy) | `GET /api/chats?language=en&userId=<uid>&role=student&viewAs=student` then `GET /api/chats/<chatId>/video` |
 
 `/getTutorSchedule` returns `{"hasLibrary": bool, "schedule": [ {startTime:{$date}, endTime:{$date}, reservable: bool, tutorId} ]}`.
 

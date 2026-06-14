@@ -45,6 +45,9 @@ cambly bookings
 # 7. Cancel one (shows the refund first with --dry-run)
 cambly cancel --lesson <lessonId> --dry-run
 cambly cancel --lesson <lessonId>
+
+# 8. Download the latest class recording to iCloud Drive
+cambly records
 ```
 
 ## Authentication
@@ -82,6 +85,7 @@ will use them.
 | `search [query]` | Search the tutor catalog. `--online`, `--favorites`, `--limit N`. |
 | `schedule <tutorId>` | List a tutor's slots. `--reservable` (only bookable), `--days N` (horizon). |
 | `bookings` | List your upcoming classes. `--past`, `--include-cancelled`, `--days N`. |
+| `records` | Download class recordings. Defaults to the latest recording in the last 90 days and saves to `~/Library/Mobile Documents/com~apple~CloudDocs/Cambly`. `--limit N`, `--days N`, `--dir PATH`, `--list`, `--watch`, `--interval 10m`. |
 | `book` | Book a class. `--tutor <id>` `--start <when>` `--minutes 30` `--topic` `--force` `--dry-run`. |
 | `cancel` | Cancel a class. `--lesson <id>` (or `--participant <id>`), `--dry-run` to preview the refund. |
 | `version` | Print version. |

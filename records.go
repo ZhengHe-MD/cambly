@@ -2,6 +2,7 @@ package cambly
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -98,6 +99,20 @@ type VideoSession struct {
 	HasVideoURL bool   `json:"hasVideoUrl"`
 }
 
+// TranscriptSegment is one timed utterance from /model/lesson_transcript.
+type TranscriptSegment struct {
+	Text               string  `json:"text"`
+	StartOffsetSeconds float64 `json:"startOffsetSeconds"`
+	UserID             string  `json:"userId"`
+}
+
+// LessonTranscript is the structured transcript payload for a completed lesson.
+type LessonTranscript struct {
+	ID         string              `json:"id"`
+	LessonID   string              `json:"lessonId"`
+	Transcript []TranscriptSegment `json:"transcript"`
+}
+
 // VideoSession returns metadata for a lesson-history video session.
 func (c *Client) VideoSession(ctx context.Context, sessionID string) (*VideoSession, error) {
 	if sessionID == "" {
@@ -115,6 +130,31 @@ func (c *Client) DownloadVideoSession(ctx context.Context, sessionID string) (*h
 		return nil, fmt.Errorf("video session download: id is required")
 	}
 	return c.downloadStream(ctx, "/api/video_sessions/"+url.PathEscape(sessionID)+"/video")
+}
+
+// LessonTranscript returns the timed transcript for a completed lesson plus the
+// original JSON bytes returned by Cambly.
+func (c *Client) LessonTranscript(ctx context.Context, lessonID string, language string) (*LessonTranscript, []byte, error) {
+	if lessonID == "" {
+		return nil, nil, fmt.Errorf("lesson transcript: lesson id is required")
+	}
+	if language == "" {
+		language = "en"
+	}
+	q := url.Values{
+		"language":          {language},
+		"interfaceLanguage": {language},
+	}
+	path := "/model/lesson_transcript/" + url.PathEscape(lessonID)
+	data, err := c.do(ctx, http.MethodGet, path, q, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	var out LessonTranscript
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, nil, fmt.Errorf("decode %s: %w", path, err)
+	}
+	return &out, data, nil
 }
 
 func (c *Client) downloadStream(ctx context.Context, path string) (*http.Response, error) {

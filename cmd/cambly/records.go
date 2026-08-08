@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -20,18 +21,24 @@ import (
 const defaultRecordPollInterval = 10 * time.Minute
 
 type recordOut struct {
-	Source         string `json:"source"`
-	VideoSessionID string `json:"videoSessionId,omitempty"`
-	ChatID         string `json:"chatId,omitempty"`
-	LessonID       string `json:"lessonId,omitempty"`
-	TutorID        string `json:"tutorId,omitempty"`
-	TutorName      string `json:"tutorName,omitempty"`
-	Start          string `json:"start,omitempty"`
-	StartLocal     string `json:"startLocal,omitempty"`
-	Minutes        int    `json:"minutes,omitempty"`
-	Path           string `json:"path,omitempty"`
-	Status         string `json:"status"`
-	Bytes          int64  `json:"bytes,omitempty"`
+	Source             string `json:"source"`
+	VideoSessionID     string `json:"videoSessionId,omitempty"`
+	ChatID             string `json:"chatId,omitempty"`
+	LessonID           string `json:"lessonId,omitempty"`
+	TutorID            string `json:"tutorId,omitempty"`
+	TutorName          string `json:"tutorName,omitempty"`
+	Start              string `json:"start,omitempty"`
+	StartLocal         string `json:"startLocal,omitempty"`
+	Minutes            int    `json:"minutes,omitempty"`
+	Path               string `json:"path,omitempty"`
+	TranscriptJSON     string `json:"transcriptJson,omitempty"`
+	TranscriptTXT      string `json:"transcriptTxt,omitempty"`
+	TranscriptSRT      string `json:"transcriptSrt,omitempty"`
+	TranscriptVTT      string `json:"transcriptVtt,omitempty"`
+	TranscriptStatus   string `json:"transcriptStatus,omitempty"`
+	TranscriptSegments int    `json:"transcriptSegments,omitempty"`
+	Status             string `json:"status"`
+	Bytes              int64  `json:"bytes,omitempty"`
 }
 
 type recordCandidate struct {
@@ -44,6 +51,21 @@ type recordCandidate struct {
 	Minutes        int
 }
 
+// recordsOptions groups the records flags. They are mostly booleans, and
+// passing seven of them positionally is an easy way to silently swap two.
+type recordsOptions struct {
+	Dir             string
+	Limit           int
+	Days            int
+	ListOnly        bool
+	Force           bool
+	Transcripts     bool
+	TranscriptsOnly bool
+	Subdirs         bool
+	Naming          string
+	Delay           time.Duration
+}
+
 func cmdRecords(args []string) error {
 	fs := flag.NewFlagSet("records", flag.ContinueOnError)
 	dir := fs.String("dir", defaultRecordsDir(), "directory to save recordings")
@@ -51,6 +73,11 @@ func cmdRecords(args []string) error {
 	days := fs.Int("days", 90, "look back this many days for recent lesson recordings")
 	listOnly := fs.Bool("list", false, "list available recordings without downloading")
 	force := fs.Bool("force", false, "redownload even when the target file exists")
+	transcripts := fs.Bool("transcripts", true, "download lesson transcripts alongside recordings when available")
+	transcriptsOnly := fs.Bool("transcripts-only", false, "fetch transcripts without downloading the videos (backfill an existing archive)")
+	subdirs := fs.Bool("subdirs", false, "save under YYYY/YYYY-MM directories below --dir")
+	delay := fs.Duration("delay", 0, "pause between lessons; use on bulk backfills to go easy on the API")
+	naming := fs.String("naming", namingSession, "filename scheme: session (date_time_Tutor_videoSessionId) or lesson (date_Tutor-Name_30m_lessonId)")
 	watch := fs.Bool("watch", false, "keep polling and download new recordings")
 	interval := fs.Duration("interval", defaultRecordPollInterval, "poll interval for --watch")
 	timeout := fs.Duration("timeout", time.Hour, "timeout per poll/download pass")
@@ -72,11 +99,33 @@ func cmdRecords(args []string) error {
 	if *timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
+	if *delay < 0 {
+		return fmt.Errorf("--delay cannot be negative")
+	}
+	if *transcriptsOnly && !*transcripts {
+		return fmt.Errorf("--transcripts-only requires --transcripts")
+	}
+	if *naming != namingSession && *naming != namingLesson {
+		return fmt.Errorf("--naming must be %q or %q", namingSession, namingLesson)
+	}
+
+	opts := recordsOptions{
+		Dir:             *dir,
+		Limit:           *limit,
+		Days:            *days,
+		ListOnly:        *listOnly,
+		Force:           *force,
+		Transcripts:     *transcripts,
+		TranscriptsOnly: *transcriptsOnly,
+		Subdirs:         *subdirs,
+		Naming:          *naming,
+		Delay:           *delay,
+	}
 
 	if !*watch {
 		c, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
-		result, err := runRecordsOnce(c, *dir, *limit, *days, *listOnly, *force)
+		result, err := runRecordsOnce(c, opts)
 		if err != nil {
 			return err
 		}
@@ -86,7 +135,7 @@ func cmdRecords(args []string) error {
 
 	for {
 		c, cancel := context.WithTimeout(context.Background(), *timeout)
-		result, err := runRecordsOnce(c, *dir, *limit, *days, *listOnly, *force)
+		result, err := runRecordsOnce(c, opts)
 		cancel()
 		if err != nil {
 			emit(map[string]any{"ok": false, "error": err.Error(), "nextPollAt": time.Now().Add(*interval).Format(time.RFC3339)})
@@ -97,34 +146,60 @@ func cmdRecords(args []string) error {
 	}
 }
 
-func runRecordsOnce(ctx context.Context, dir string, limit int, days int, listOnly bool, force bool) (map[string]any, error) {
+func runRecordsOnce(ctx context.Context, opts recordsOptions) (map[string]any, error) {
 	client, err := newClient()
 	if err != nil {
 		return nil, err
 	}
-	records, err := recordCandidates(ctx, client, limit, days)
+	client.HTTP.Timeout = 0
+	records, err := recordCandidates(ctx, client, opts.Limit, opts.Days)
 	if err != nil {
 		return nil, err
 	}
 	tutors := tutorDetailsForRecords(ctx, client, records)
 
 	out := make([]recordOut, 0, len(records))
-	for _, record := range records {
-		item := newRecordOut(record, tutors)
-		if !listOnly {
-			path, bytes, status, err := downloadRecord(ctx, client, dir, record, item.TutorName, force)
-			if err != nil {
-				return nil, err
+	for i, record := range records {
+		if i > 0 && opts.Delay > 0 && !opts.ListOnly {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(opts.Delay):
 			}
-			item.Path = path
-			item.Bytes = bytes
-			item.Status = status
+		}
+		item := newRecordOut(record, tutors)
+		if !opts.ListOnly {
+			recordDir := dirForRecord(opts.Dir, record, opts.Subdirs)
+			if opts.TranscriptsOnly {
+				item.Status = "skipped: transcripts-only"
+			} else {
+				path, bytes, status, err := downloadRecord(ctx, client, recordDir, record, item.TutorName, opts.Force, opts.Naming)
+				if err != nil {
+					return nil, err
+				}
+				item.Path = path
+				item.Bytes = bytes
+				item.Status = status
+			}
+			if opts.Transcripts && record.LessonID != "" {
+				paths, segments, transcriptStatus, err := downloadTranscript(ctx, client, recordDir, record, item.TutorName, opts.Force, opts.Naming)
+				if err != nil {
+					item.TranscriptStatus = "unavailable: " + err.Error()
+				} else {
+					item.TranscriptJSON = paths["json"]
+					item.TranscriptTXT = paths["txt"]
+					item.TranscriptSRT = paths["srt"]
+					item.TranscriptVTT = paths["vtt"]
+					item.TranscriptSegments = segments
+					item.TranscriptStatus = transcriptStatus
+				}
+			}
 		}
 		out = append(out, item)
 	}
 	return map[string]any{
 		"ok":          true,
-		"directory":   dir,
+		"directory":   opts.Dir,
 		"count":       len(out),
 		"records":     out,
 		"completedAt": time.Now().Format(time.RFC3339),
@@ -239,7 +314,7 @@ func newRecordOut(record recordCandidate, tutors map[string]cambly.Tutor) record
 	}
 }
 
-func downloadRecord(ctx context.Context, client *cambly.Client, dir string, record recordCandidate, tutorName string, force bool) (string, int64, string, error) {
+func downloadRecord(ctx context.Context, client *cambly.Client, dir string, record recordCandidate, tutorName string, force bool, naming string) (string, int64, string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", 0, "", err
 	}
@@ -258,7 +333,7 @@ func downloadRecord(ctx context.Context, client *cambly.Client, dir string, reco
 	defer resp.Body.Close()
 
 	ext := recordExtension(resp)
-	path := filepath.Join(dir, recordFilename(record, tutorName, ext))
+	path := filepath.Join(dir, recordFilename(record, tutorName, ext, naming))
 	if !force {
 		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
 			if resp.ContentLength <= 0 || info.Size() == resp.ContentLength {
@@ -299,6 +374,161 @@ func downloadRecord(ctx context.Context, client *cambly.Client, dir string, reco
 	return path, written, "downloaded", nil
 }
 
+func downloadTranscript(ctx context.Context, client *cambly.Client, dir string, record recordCandidate, tutorName string, force bool, naming string) (map[string]string, int, string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, 0, "", err
+	}
+	transcript, raw, err := client.LessonTranscript(ctx, record.LessonID, "en")
+	if err != nil {
+		return nil, 0, "", err
+	}
+	if transcript == nil || len(transcript.Transcript) == 0 {
+		return nil, 0, "", fmt.Errorf("empty transcript")
+	}
+	raw = prettyJSON(raw)
+	base := strings.TrimSuffix(recordFilename(record, tutorName, "", naming), filepath.Ext(recordFilename(record, tutorName, "", naming)))
+	files := map[string][]byte{
+		"json": raw,
+		"txt":  []byte(formatTranscriptText(transcript.Transcript)),
+		"srt":  []byte(formatTranscriptSRT(transcript.Transcript)),
+		"vtt":  []byte(formatTranscriptVTT(transcript.Transcript)),
+	}
+	paths := map[string]string{}
+	status := "exists"
+	for kind, data := range files {
+		path := filepath.Join(dir, base+".en."+kind)
+		wrote, err := writeFileIfNeeded(path, data, force)
+		if err != nil {
+			return nil, 0, "", err
+		}
+		if wrote {
+			status = "downloaded"
+		}
+		paths[kind] = path
+	}
+	return paths, len(transcript.Transcript), status, nil
+}
+
+func writeFileIfNeeded(path string, data []byte, force bool) (bool, error) {
+	if !force {
+		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+			return false, nil
+		} else if err != nil && !os.IsNotExist(err) {
+			return false, err
+		}
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".cambly-transcript-*.tmp")
+	if err != nil {
+		return false, err
+	}
+	tmpName := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return false, err
+	}
+	removeTmp = false
+	return true, nil
+}
+
+func prettyJSON(raw []byte) []byte {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return raw
+	}
+	out, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return raw
+	}
+	return append(out, '\n')
+}
+
+func formatTranscriptText(segments []cambly.TranscriptSegment) string {
+	var b strings.Builder
+	for _, segment := range segments {
+		text := strings.TrimSpace(segment.Text)
+		if text == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "[%s] %s\n", transcriptTimestamp(segment.StartOffsetSeconds, "."), text)
+	}
+	return b.String()
+}
+
+func formatTranscriptSRT(segments []cambly.TranscriptSegment) string {
+	cues := transcriptCues(segments)
+	var b strings.Builder
+	for i, cue := range cues {
+		fmt.Fprintf(&b, "%d\n%s --> %s\n%s\n\n", i+1, transcriptTimestamp(cue.start, ","), transcriptTimestamp(cue.end, ","), cue.text)
+	}
+	return b.String()
+}
+
+func formatTranscriptVTT(segments []cambly.TranscriptSegment) string {
+	cues := transcriptCues(segments)
+	var b strings.Builder
+	b.WriteString("WEBVTT\n\n")
+	for _, cue := range cues {
+		fmt.Fprintf(&b, "%s --> %s\n%s\n\n", transcriptTimestamp(cue.start, "."), transcriptTimestamp(cue.end, "."), cue.text)
+	}
+	return b.String()
+}
+
+type transcriptCue struct {
+	start float64
+	end   float64
+	text  string
+}
+
+func transcriptCues(segments []cambly.TranscriptSegment) []transcriptCue {
+	cues := make([]transcriptCue, 0, len(segments))
+	for i, segment := range segments {
+		text := strings.TrimSpace(segment.Text)
+		if text == "" {
+			continue
+		}
+		start := segment.StartOffsetSeconds
+		end := start + 3
+		for j := i + 1; j < len(segments); j++ {
+			next := segments[j].StartOffsetSeconds
+			if next > start {
+				end = next
+				break
+			}
+		}
+		if end <= start {
+			end = start + 1
+		}
+		cues = append(cues, transcriptCue{start: start, end: end, text: text})
+	}
+	return cues
+}
+
+func transcriptTimestamp(seconds float64, decimal string) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	totalMillis := int64(seconds*1000 + 0.5)
+	hours := totalMillis / 3600000
+	totalMillis %= 3600000
+	minutes := totalMillis / 60000
+	totalMillis %= 60000
+	secs := totalMillis / 1000
+	millis := totalMillis % 1000
+	return fmt.Sprintf("%02d:%02d:%02d%s%03d", hours, minutes, secs, decimal, millis)
+}
+
 func defaultRecordsDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -307,18 +537,52 @@ func defaultRecordsDir() string {
 	return filepath.Join(home, "Library", "Mobile Documents", "com~apple~CloudDocs", "Cambly")
 }
 
-func recordFilename(record recordCandidate, tutorName string, ext string) string {
-	when := record.Start
-	stamp := "unknown-time"
-	if !when.IsZero() {
-		stamp = when.Local().Format("2006-01-02_1504")
+func dirForRecord(root string, record recordCandidate, subdirs bool) string {
+	if !subdirs || record.Start.IsZero() {
+		return root
 	}
+	local := record.Start.Local()
+	return filepath.Join(root, local.Format("2006"), local.Format("2006-01"))
+}
+
+// Filename schemes. `session` is the historical default. `lesson` keys files by
+// lessonID instead of videoSessionID, which is the stable identifier the API
+// exposes everywhere else (transcripts, bookings) - so it is the one to use when
+// files must line up with an external index.
+const (
+	namingSession = "session" // 2026-08-05_1830_Peter_London_<videoSessionID>
+	namingLesson  = "lesson"  // 2026-08-05_Peter-London_30m_<lessonID>
+)
+
+func recordFilename(record recordCandidate, tutorName string, ext string, naming string) string {
+	when := record.Start
 	name := tutorName
 	if name == "" {
 		name = record.TutorID
 	}
 	if name == "" {
 		name = "unknown-tutor"
+	}
+
+	if naming == namingLesson {
+		stamp := "unknown-date"
+		if !when.IsZero() {
+			stamp = when.Local().Format("2006-01-02")
+		}
+		id := record.LessonID
+		if id == "" {
+			id = record.VideoSessionID
+		}
+		if id == "" {
+			id = record.ChatID
+		}
+		hyphenated := safeFilename(strings.ReplaceAll(strings.TrimSpace(name), " ", "-"))
+		return fmt.Sprintf("%s_%s_%dm_%s%s", stamp, hyphenated, record.Minutes, id, ext)
+	}
+
+	stamp := "unknown-time"
+	if !when.IsZero() {
+		stamp = when.Local().Format("2006-01-02_1504")
 	}
 	id := record.VideoSessionID
 	if id == "" {

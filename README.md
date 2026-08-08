@@ -46,8 +46,11 @@ cambly bookings
 cambly cancel --lesson <lessonId> --dry-run
 cambly cancel --lesson <lessonId>
 
-# 8. Download the latest class recording to iCloud Drive
+# 8. Download the latest class recording (and transcript) to iCloud Drive
 cambly records
+
+# 9. Backfill transcripts for recordings you already have, without re-downloading video
+cambly records --transcripts-only --limit 0 --days 365
 ```
 
 ## Authentication
@@ -85,13 +88,28 @@ will use them.
 | `search [query]` | Search the tutor catalog. `--online`, `--favorites`, `--limit N`. |
 | `schedule <tutorId>` | List a tutor's slots. `--reservable` (only bookable), `--days N` (horizon). |
 | `bookings` | List your upcoming classes. `--past`, `--include-cancelled`, `--days N`. |
-| `records` | Download class recordings. Defaults to the latest recording in the last 90 days and saves to `~/Library/Mobile Documents/com~apple~CloudDocs/Cambly`. `--limit N`, `--days N`, `--dir PATH`, `--list`, `--watch`, `--interval 10m`. |
+| `records` | Download class recordings and transcripts. Defaults to the latest recording in the last 90 days and saves to `~/Library/Mobile Documents/com~apple~CloudDocs/Cambly`. `--limit N`, `--days N`, `--dir PATH`, `--list`, `--watch`, `--interval 10m`, `--transcripts` (default on), `--transcripts-only`, `--naming session\|lesson`, `--subdirs`, `--delay`. |
 | `book` | Book a class. `--tutor <id>` `--start <when>` `--minutes 30` `--topic` `--force` `--dry-run`. |
 | `cancel` | Cancel a class. `--lesson <id>` (or `--participant <id>`), `--dry-run` to preview the refund. |
 | `version` | Print version. |
 
 `--start` accepts epoch-millis, RFC3339 (`2026-06-09T21:00:00+08:00`), or a local
 `"YYYY-MM-DD HH:MM"`.
+
+### Recordings & transcripts
+
+`records` saves each recording alongside its transcript (when available) in
+four formats: `.en.json` (raw API response), `.en.txt`, `.en.srt`, and
+`.en.vtt`. Turn transcripts off with `--transcripts=false`, or fetch just the
+transcripts for recordings you've already downloaded with
+`--transcripts-only`.
+
+- `--naming session` (default) names files `<date>_<time>_<Tutor>_<videoSessionId>`.
+  `--naming lesson` names them `<date>_<Tutor-Name>_<minutes>m_<lessonId>` —
+  useful when you need filenames to line up with `lessonId` elsewhere (e.g. `bookings`).
+- `--subdirs` files recordings under `<dir>/YYYY/YYYY-MM/` instead of flat in `--dir`.
+- `--delay 2s` pauses between lessons — go easy on the API during a large `--days` backfill.
+- Existing files are left alone unless `--force` is set.
 
 ### Safety features
 
